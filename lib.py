@@ -8,7 +8,8 @@ from typing import List, Any
 from collections import Counter
 from numba import cuda
 import numba
-import random
+import torch
+
 
 @dataclass
 class ScalarHistory:
@@ -25,7 +26,8 @@ class ScalarHistory:
             return ScalarHistory(self.last_fn, self.inputs + [b])
 
         return ScalarHistory(self.last_fn, self.inputs + b.inputs)
-        
+
+
 class Scalar:
     def __init__(self, location):
         self.location = location
@@ -38,7 +40,7 @@ class Scalar:
 
     def __radd__(self, b):
         return self + b
-        
+
     def __add__(self, b):
         if isinstance(b, (float, int)):
             return ScalarHistory("id", [self])
@@ -46,7 +48,8 @@ class Scalar:
 
     def __iadd__(self, other):
         assert False, "Instead of `out[] +=` use a local variable `acc + =`"
-    
+
+
 class Table:
     def __init__(self, name, array):
         self.name = name
@@ -54,7 +57,7 @@ class Table:
         self.array = array
 
         self.size = array.shape
-    
+
     def __getitem__(self, index):
         self.array[index]
         if isinstance(index, int):
@@ -78,6 +81,7 @@ class Table:
             return
         self.incoming.append((index, val))
 
+
 @dataclass(frozen=True, eq=True)
 class Coord:
     x: int
@@ -97,7 +101,7 @@ class Coord:
 class RefList:
     def __init__(self):
         self.refs = []
-        
+
     def __getitem__(self, index):
         return self.refs[-1][index]
 
@@ -205,6 +209,7 @@ def myconnect(diagram, loc, color, con, name1, name2):
     )
     return dia
 
+
 def draw_table(tab):
     t = text(tab.name, 0.5).fill_color(black).line_width(0.0)
     if len(tab.size) == 1:
@@ -224,8 +229,10 @@ def draw_connect(tab, dia, loc2, color, con):
         ]
     )
 
+
 def grid(mat, sep):
     return vcat([ hcat([y for y in x] , sep) for x in mat], sep )
+
 
 def draw_base(_, a, c, out):
     inputs = vcat([draw_table(d) for d in a], 2.0).center_xy()
@@ -244,7 +251,7 @@ def draw_coins(tpbx, tpby):
             for tt, pos in Coord(tpbx, tpby).enumerate()
         ]
     )
-    
+
 
 def label(dia, content):
     t = vstrut(0.5) / text(content, 0.5).fill_color(black).line_width(0) / vstrut(0.5)
@@ -252,7 +259,6 @@ def label(dia, content):
     return (dia + dia.juxtapose(t, -unit_y)).center_xy()
 
 
-    
 def draw_results(results, name, tpbx, tpby, sparse=False):
     full = empty()
     blocks = []
@@ -267,7 +273,7 @@ def draw_results(results, name, tpbx, tpby, sparse=False):
                 + (1 / (2 * tpby)),
             )
             color = colors[tt]
-            
+
             lines = True
             if sparse:
                 lines = (pos.x == 0 and pos.y == 0) or (
@@ -290,7 +296,7 @@ def draw_results(results, name, tpbx, tpby, sparse=False):
             Color("grey")
         ).fill_opacity(0.0)
 
-        
+
         blocks.append(dia.pad(1.1))
         locations.append(P2(block.x, block.y))
 
@@ -313,12 +319,9 @@ def draw_results(results, name, tpbx, tpby, sparse=False):
     env = full.get_envelope()
     set_svg_height(50 * env.height)
 
-
     chalk.core.set_svg_output_height(500)
     return rectangle(env.width, env.height).fill_color(white) + full
 
-
-#
 
 @dataclass
 class CudaProblem:
@@ -330,7 +333,7 @@ class CudaProblem:
     blockspergrid: Coord = Coord(1, 1)
     threadsperblock: Coord = Coord(1, 1)
     spec: Any = None
-        
+
     def run_cuda(self):
         fn = self.fn
         fn = fn(numba.cuda)
@@ -339,6 +342,11 @@ class CudaProblem:
             self.out, *self.inputs, *self.args
         )
         return self.out
+
+    def run_triton(self, tfn) -> np.ndarray:
+        out = torch.zeros(self.out.shape, device='cuda')
+        tfn[self.threadsperblock.tuple()](out, *[torch.from_numpy(x).cuda() for x in self.inputs], *self.args)
+        return out.cpu().numpy()
 
     def run_python(self):
         results = {}
@@ -359,7 +367,6 @@ class CudaProblem:
         return results
 
     def score(self, results):
-
         total = 0
         full = Counter()
         for pos, (tt, a, c, out) in results[Coord(0, 0)].items():
@@ -380,73 +387,37 @@ class CudaProblem:
                 if count[k] > full[k]:
                     full[k] = count[k]
         print(f"""# {self.name}
- 
+
    Score (Max Per Thread):
    | {'Global Reads':>13} | {'Global Writes':>13} | {'Shared Reads' :>13} | {'Shared Writes' :>13} |
-   | {full['in_reads']:>13} | {full['out_writes']:>13} | {full['shared_reads']:>13} | {full['shared_writes']:>13} | 
-""") 
-    
+   | {full['in_reads']:>13} | {full['out_writes']:>13} | {full['shared_reads']:>13} | {full['shared_writes']:>13} |
+""")
+
     def show(self, sparse=False):
         results = self.run_python()
         self.score(results)
         return draw_results(results, self.name,
                             self.threadsperblock.x, self.threadsperblock.y, sparse)
-    
+
     def check(self):
         x = self.run_cuda()
         y = self.spec(*self.inputs)
         try:
             np.testing.assert_allclose(x, y)
             print("Passed Tests!")
-            from IPython.display import HTML
-            pups = [
-            "2m78jPG",
-            "pn1e9TO",
-            "MQCIwzT",
-            "udLK6FS",
-            "ZNem5o3",
-            "DS2IZ6K",
-            "aydRUz8",
-            "MVUdQYK",
-            "kLvno0p",
-            "wScLiVz",
-            "Z0TII8i",
-            "F1SChho",
-            "9hRi2jN",
-            "lvzRF3W",
-            "fqHxOGI",
-            "1xeUYme",
-            "6tVqKyM",
-            "CCxZ6Wr",
-            "lMW0OPQ",
-            "wHVpHVG",
-            "Wj2PGRl",
-            "HlaTE8H",
-            "k5jALH0",
-            "3V37Hqr",
-            "Eq2uMTA",
-            "Vy9JShx",
-            "g9I2ZmK",
-            "Nu4RH7f",
-            "sWp0Dqd",
-            "bRKfspn",
-            "qawCMl5",
-            "2F6j2B4",
-            "fiJxCVA",
-            "pCAIlxD",
-            "zJx2skh",
-            "2Gdl1u7",
-            "aJJAY4c",
-            "ros6RLC",
-            "DKLBJh7",
-            "eyxH0Wc",
-            "rJEkEw4"]
-            return HTML("""
-            <video alt="test" controls autoplay=1>
-                <source src="https://openpuppies.com/mp4/%s.mp4"  type="video/mp4">
-            </video>
-            """%(random.sample(pups, 1)[0]))
-            
+
+        except AssertionError:
+            print("Failed Tests.")
+            print("Yours:", x)
+            print("Spec :", y)
+
+    def check_triton(self, tfn):
+        x = self.run_triton(tfn)
+        y = self.spec(*self.inputs)
+        try:
+            np.testing.assert_allclose(x, y)
+            print("Passed Tests!")
+
         except AssertionError:
             print("Failed Tests.")
             print("Yours:", x)
